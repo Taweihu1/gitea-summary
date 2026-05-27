@@ -36,6 +36,27 @@ import os
 import re
 import sys
 import argparse
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load key=value pairs from .env in the same directory as this script."""
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        return
+    with env_file.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key and key not in os.environ:  # don't override existing env vars
+                os.environ[key] = value
+
+
+_load_dotenv()
 from collections import defaultdict
 from datetime import datetime, timedelta
 from email.header import decode_header
