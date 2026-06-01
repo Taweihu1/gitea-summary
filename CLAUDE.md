@@ -5,52 +5,67 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the Tool
 
 ```bash
-# List available IMAP folders (useful for finding the right folder name)
-python gitea_summary.py --email you@company.com --list-folders
+# Step 1 (once): save Outlook session
+python gitea_summary.py --login
 
-# Summarize commits from the last 7 days
-python gitea_summary.py --email you@company.com --days 7
+# Default: fetch yesterday's GIT emails and post to Claude.ai chat for summarization
+# (Brave/Chrome must be running, or the script will launch it automatically)
+python gitea_summary.py
 
-# Generate AI narrative summary (Traditional Chinese) and save to file
-python gitea_summary.py --email you@company.com --days 14 --claude --output summary.md
+# Generate AI narrative summary (Traditional Chinese) via Claude API instead
+python gitea_summary.py --claude --output summary.md
 
-# Use OAuth2 device-flow instead of password
-python gitea_summary.py --email you@company.com --auth oauth \
-    --client-id <azure-app-id> --tenant <tenant-id>
+# List available Outlook folders
+python gitea_summary.py --list-folders
 ```
 
 ## Dependencies
 
-The core tool requires no external packages for password-based auth. Optional:
-
 ```bash
-pip install msal        # required only for --auth oauth
-pip install anthropic   # required only for --claude
+pip install playwright requests       # required
+playwright install chromium           # only needed if no system Brave/Chrome
+pip install anthropic                 # required only for --claude
 ```
 
 ## Configuration
 
-Credentials can be set in a `.env` file (see `.env.example`) or via env vars:
+Set in `.env` or as environment variables:
 
-- `OUTLOOK_EMAIL` / `OUTLOOK_PASSWORD` — avoids typing `--email`/`--password` each run
 - `ANTHROPIC_API_KEY` — needed for `--claude` summaries
-- `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` — needed for `--auth oauth`
+- `CLAUDE_CHAT_URL` — override default Claude.ai chat URL for `--post`
+
+Session files:
+- `auth_state.json` — Outlook session (created by `--login`); re-run `--login` if expired
+
+Claude.ai posting uses **CDP** (Chrome DevTools Protocol) to connect to the real Brave/Chrome
+browser instead of a fresh context, bypassing Cloudflare bot detection.
+The script auto-launches Brave with `--remote-debugging-port=9222` if the browser is not running.
 
 ## Architecture
 
-Single-file CLI (`gitea_summary.py`, ~460 lines). The data flow is:
+Single-file CLI (`gitea_summary.py`). Two auth phases, two operating modes:
 
 ```
-main()
- └─ _connect_password() / _connect_oauth2()   # IMAP to outlook.office365.com:993
- └─ _fetch_commits()                           # searches folder, calls _parse_gitea_email() per message
- └─ _format_summary() / _claude_summary()     # grouped Markdown or Claude API narrative
+Login phases (once each):
+  --login        → headless=False, outlook.cloud.microsoft → auth_state.json
+  --login-claude → headless=False, claude.ai              → claude_auth_state.json
+
+Normal run (summarize mode):
+  headless=True + auth_state.json → capture OWA Bearer token
+  requests + Bearer → Outlook REST API v2.0 → fetch messages
+  _parse_gitea_message() + _is_upstream_sync() → filtered commits
+  _format_summary() or _claude_api_summary() → print / save
+
+--post mode (raw email → Claude chat):
+  Same Outlook fetch (raw messages, no commit parsing)
+  headless=False + claude_auth_state.json → open Claude chat
+  clipboard + execCommand('paste') → fill ProseMirror editor → submit
 ```
 
-**Key parsing logic** — `_parse_gitea_email()` extracts repo, branch, author, hash, and title from Gitea push notification emails. Subject format expected: `[owner/repo] commit_title (branch)`. Multi-commit pushes are handled via the text body.
+**Key parsing logic** — `_parse_gitea_message()` extracts repo, branch, author, hash, and title from Gitea push notification email subjects. Format expected: `[owner/repo] commit_title (branch)`. Multi-commit pushes are handled via `* <hash> <title>` lines in the body (HTML stripped before parsing).
 
-**Upstream-sync filter** — `_is_upstream_sync()` uses regex patterns to drop merge/rebase-from-upstream commits from the output. Patterns live at the top of that function.
+**Upstream-sync filter** — `_is_upstream_sync()` drops merge/rebase-from-upstream commits. Patterns live at the top of that function.
 
-**Claude summary** — `_claude_summary()` groups commits by repo and sends them to `claude-sonnet-4-6` with a Traditional Chinese (繁體中文) prompt. Requires `ANTHROPIC_API_KEY`.
+**Outlook REST API** — `https://outlook.office365.com/api/v2.0`, PascalCase fields (`Subject`, `Body.Content`, `ReceivedDateTime`). Folder IDs containing `/` are URL-encoded before use.
 
-**IMAP folder** — defaults to `"GIT"`. Override with `--folder`. Use `--list-folders` to discover folder names on the mailbox.
+**Claude chat posting** — uses clipboard API + `execCommand('paste')` to fill the ProseMirror contenteditable editor, then clicks the send button (falls back to Enter key).

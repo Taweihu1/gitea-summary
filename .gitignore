@@ -6,4 +6,7 @@ __pycache__/
 venv/
 *.log
 summary*.md
+brave_profile/
+auth_state.json
+claude_auth_state.json
 *.txt
