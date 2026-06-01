@@ -210,7 +210,7 @@ def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = Fal
     url = (
         f"{OUTLOOK_API}/me/mailFolders/{folder_id_enc}/messages"
         f"?$filter={filt}"
-        f"&$select=Subject,ReceivedDateTime,Body,From&$top=50"
+        f"&$select=Id,Subject,ReceivedDateTime,Body,From&$top=50"
     )
     msgs: list[dict] = []
     while url:
@@ -221,6 +221,28 @@ def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = Fal
         url = body.get("@odata.nextLink")
         time.sleep(0.1)
     return msgs
+
+
+# ── Mark read + delete ──────────────────────────────────────────────────────
+
+def _mark_read_and_delete(session, messages: list[dict]) -> None:
+    if not messages:
+        return
+    deleted = 0
+    for msg in messages:
+        msg_id = msg.get("Id") or msg.get("id")
+        if not msg_id:
+            continue
+        msg_id_enc = urllib.parse.quote(msg_id, safe="")
+        url = f"{OUTLOOK_API}/me/messages/{msg_id_enc}"
+        try:
+            session.patch(url, json={"IsRead": True}, timeout=10).raise_for_status()
+            session.delete(url, timeout=10).raise_for_status()
+            deleted += 1
+        except Exception as exc:
+            print(f"  [warn] failed to process message {msg_id[:20]}…: {exc}")
+        time.sleep(0.05)
+    print(f"  → {deleted} email(s) marked read and deleted")
 
 
 # ── Upstream-sync detection ──────────────────────────────────────────────────
@@ -304,7 +326,7 @@ def _parse_gitea_message(subject: str, body: str, date: str) -> list[dict] | Non
 
 # ── Fetch & filter commits ───────────────────────────────────────────────────
 
-def _fetch_commits(session, folder: str, days: int, verbose: bool = False) -> list[dict]:
+def _fetch_commits(session, folder: str, days: int, verbose: bool = False) -> tuple[list[dict], list[dict]]:
     raw_messages = _fetch_raw_messages(session, folder, days)
     print(f"Scanning {len(raw_messages)} email(s) from the last {days} day(s) …")
 
@@ -337,7 +359,7 @@ def _fetch_commits(session, folder: str, days: int, verbose: bool = False) -> li
         f"  |  {skipped_sync} upstream-sync filtered"
         f"  |  {skipped_non_gitea} non-Gitea emails ignored"
     )
-    return commits
+    return commits, raw_messages
 
 
 # ── Plain-text summary ───────────────────────────────────────────────────────
@@ -624,10 +646,11 @@ def main() -> None:
             return
         content = _format_for_claude_chat(msgs, args.days)
         _post_to_claude_chat(content, args.chat)
+        _mark_read_and_delete(session, msgs)
         return
 
     # --claude / --output: fetch commits, format/summarize, print or save
-    commits = _fetch_commits(session, args.folder, args.days, verbose=args.verbose)
+    commits, raw_messages = _fetch_commits(session, args.folder, args.days, verbose=args.verbose)
 
     if args.claude:
         summary = _claude_api_summary(commits, args.days)
@@ -641,6 +664,8 @@ def main() -> None:
     else:
         print()
         print(summary)
+
+    _mark_read_and_delete(session, raw_messages)
 
 
 if __name__ == "__main__":

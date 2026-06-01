@@ -8,12 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Step 1 (once): save Outlook session
 python gitea_summary.py --login
 
-# Default: fetch yesterday's GIT emails and post to Claude.ai chat for summarization
-# (Brave/Chrome must be running, or the script will launch it automatically)
+# Step 2 (once, only needed for --post): save Claude.ai session
+python gitea_summary.py --login-claude
+
+# Default: print grouped commit summary from yesterday's GIT emails
 python gitea_summary.py
 
-# Generate AI narrative summary (Traditional Chinese) via Claude API instead
+# Generate AI narrative summary (Traditional Chinese) via Claude API
 python gitea_summary.py --claude --output summary.md
+
+# Post raw emails to Claude.ai chat (requires --login-claude; Brave/Chrome must be running)
+python gitea_summary.py --post
 
 # List available Outlook folders
 python gitea_summary.py --list-folders
@@ -36,6 +41,7 @@ Set in `.env` or as environment variables:
 
 Session files:
 - `auth_state.json` — Outlook session (created by `--login`); re-run `--login` if expired
+- `claude_auth_state.json` — Claude.ai session (created by `--login-claude`); needed for `--post`
 
 Claude.ai posting uses **CDP** (Chrome DevTools Protocol) to connect to the real Brave/Chrome
 browser instead of a fresh context, bypassing Cloudflare bot detection.
