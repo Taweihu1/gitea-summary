@@ -229,7 +229,12 @@ def _mark_read_and_delete(session, messages: list[dict]) -> None:
     if not messages:
         return
     deleted = 0
+    skipped = 0
     for msg in messages:
+        sender_name = msg.get("From", {}).get("EmailAddress", {}).get("Name", "")
+        if "GIT-INFORMER" not in sender_name.upper():
+            skipped += 1
+            continue
         msg_id = msg.get("Id") or msg.get("id")
         if not msg_id:
             continue
@@ -242,7 +247,8 @@ def _mark_read_and_delete(session, messages: list[dict]) -> None:
         except Exception as exc:
             print(f"  [warn] failed to process message {msg_id[:20]}…: {exc}")
         time.sleep(0.05)
-    print(f"  → {deleted} email(s) marked read and deleted")
+    print(f"  → {deleted} GIT-INFORMER email(s) marked read and deleted"
+          + (f"  |  {skipped} skipped (other senders)" if skipped else ""))
 
 
 # ── Upstream-sync detection ──────────────────────────────────────────────────
