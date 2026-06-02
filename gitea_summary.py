@@ -82,6 +82,7 @@ CLAUDE_CHAT_URL   = os.getenv(
     "https://claude.ai/chat/61330a1e-39e4-4717-8704-70904b9f1971",
 )
 _AUTH_SKIP        = ("/auth/", "/login", "/refresh", "/token", "/oauth")
+SENDER_KEYWORD    = "GIT-INFORMER"   # only these emails get summarised + deleted
 
 
 def _find_browser() -> str | None:
@@ -200,13 +201,13 @@ def _list_folders(session) -> None:
 def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = False) -> list[dict]:
     folder_id = _find_folder_id(session, folder)
     folder_id_enc = urllib.parse.quote(folder_id, safe="")
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+        "%Y-%m-%dT00:00:00Z"
+    )
+    clauses = [f"receivedDateTime ge {since}"]
     if unread_only:
-        filt = "isRead eq false"
-    else:
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-            "%Y-%m-%dT00:00:00Z"
-        )
-        filt = f"receivedDateTime ge {since}"
+        clauses.append("isRead eq false")
+    filt = " and ".join(clauses)
     url = (
         f"{OUTLOOK_API}/me/mailFolders/{folder_id_enc}/messages"
         f"?$filter={filt}"
@@ -223,18 +224,34 @@ def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = Fal
     return msgs
 
 
+# ── Sender filter ─────────────────────────────────────────────────────────────
+
+def _is_target_sender(msg: dict) -> bool:
+    name = msg.get("From", {}).get("EmailAddress", {}).get("Name", "")
+    return SENDER_KEYWORD in name.upper()
+
+
+def _filter_by_sender(messages: list[dict]) -> list[dict]:
+    """Keep only messages from SENDER_KEYWORD so the summarised set and the
+    deleted set are always identical."""
+    kept = [m for m in messages if _is_target_sender(m)]
+    skipped = len(messages) - len(kept)
+    if skipped:
+        print(f"  → {skipped} email(s) from other senders ignored")
+    return kept
+
+
 # ── Mark read + delete ──────────────────────────────────────────────────────
 
 def _mark_read_and_delete(session, messages: list[dict]) -> None:
+    """Mark each message read, then delete it (moves to Deleted Items).
+    Callers MUST pre-filter with _filter_by_sender — this no longer checks
+    the sender, so whatever is passed in gets deleted. The mark-read PATCH is
+    kept intentionally: if DELETE fails, the message is at least flagged read."""
     if not messages:
         return
     deleted = 0
-    skipped = 0
     for msg in messages:
-        sender_name = msg.get("From", {}).get("EmailAddress", {}).get("Name", "")
-        if "GIT-INFORMER" not in sender_name.upper():
-            skipped += 1
-            continue
         msg_id = msg.get("Id") or msg.get("id")
         if not msg_id:
             continue
@@ -247,8 +264,7 @@ def _mark_read_and_delete(session, messages: list[dict]) -> None:
         except Exception as exc:
             print(f"  [warn] failed to process message {msg_id[:20]}…: {exc}")
         time.sleep(0.05)
-    print(f"  → {deleted} GIT-INFORMER email(s) marked read and deleted"
-          + (f"  |  {skipped} skipped (other senders)" if skipped else ""))
+    print(f"  → {deleted} email(s) marked read and deleted")
 
 
 # ── Upstream-sync detection ──────────────────────────────────────────────────
@@ -334,6 +350,7 @@ def _parse_gitea_message(subject: str, body: str, date: str) -> list[dict] | Non
 
 def _fetch_commits(session, folder: str, days: int, verbose: bool = False) -> tuple[list[dict], list[dict]]:
     raw_messages = _fetch_raw_messages(session, folder, days)
+    raw_messages = _filter_by_sender(raw_messages)
     print(f"Scanning {len(raw_messages)} email(s) from the last {days} day(s) …")
 
     commits: list[dict] = []
@@ -478,6 +495,17 @@ def _connect_cdp(pw):
 
 # ── Post raw emails to Claude.ai chat ────────────────────────────────────────
 
+def _clear_clipboard() -> None:
+    """Wipe the email contents from the Windows clipboard after pasting."""
+    import subprocess
+    try:
+        subprocess.run(["powershell", "-command", "Set-Clipboard -Value ' '"],
+                       check=False, timeout=10)
+    except Exception:
+        pass
+
+
+
 def _format_for_claude_chat(msgs: list[dict], days: int) -> str:
     lines = [
         f"以下是 Outlook GIT 資料夾的未讀信件（共 {len(msgs)} 封）。",
@@ -496,7 +524,9 @@ def _format_for_claude_chat(msgs: list[dict], days: int) -> str:
     return "\n".join(lines)
 
 
-def _post_to_claude_chat(content: str, chat_url: str) -> None:
+def _post_to_claude_chat(content: str, chat_url: str) -> bool:
+    """Returns True only if the message was confirmed sent. Callers should NOT
+    delete source emails unless this returns True."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -520,15 +550,20 @@ def _post_to_claude_chat(content: str, chat_url: str) -> None:
 
         # Write content to Windows clipboard via temp file + PowerShell
         import subprocess, tempfile
-        tmp = Path(tempfile.mktemp(suffix=".txt"))
-        tmp.write_text(content, encoding="utf-8")
-        subprocess.run(
-            ["powershell", "-command",
-             f"Get-Content -Path '{tmp}' -Raw | Set-Clipboard"],
-            check=True
-        )
-        tmp.unlink()
-        print("  Clipboard ready.")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", encoding="utf-8", delete=False
+        ) as tf:
+            tf.write(content)
+            tmp = Path(tf.name)
+        try:
+            subprocess.run(
+                ["powershell", "-command",
+                 f"Get-Content -Path '{tmp}' -Raw | Set-Clipboard"],
+                check=True
+            )
+            print("  Clipboard ready.")
+        finally:
+            tmp.unlink(missing_ok=True)
 
         # Focus editor and paste
         editor = (
@@ -536,15 +571,17 @@ def _post_to_claude_chat(content: str, chat_url: str) -> None:
             or page.query_selector('[contenteditable="true"]')
         )
         if not editor:
-            print("  WARNING: editor not found.")
-        else:
-            editor.click()
-            page.keyboard.press("Control+a")
-            page.keyboard.press("Control+v")
-            print("  Pasted.")
+            print("  WARNING: editor not found — message NOT sent.")
+            _clear_clipboard()
+            return False
+        editor.click()
+        page.keyboard.press("Control+a")
+        page.keyboard.press("Control+v")
+        print("  Pasted.")
         page.wait_for_timeout(1500)
 
         # Submit
+        sent = False
         send_btn = (
             page.query_selector('button[aria-label="Send message"]')
             or page.query_selector('button[data-testid="send-button"]')
@@ -552,15 +589,20 @@ def _post_to_claude_chat(content: str, chat_url: str) -> None:
         if send_btn:
             send_btn.click()
             print("  Message sent.")
+            sent = True
         else:
             editor = page.query_selector('[contenteditable="true"]')
             if editor:
                 editor.press("Enter")
                 print("  Message sent via Enter.")
+                sent = True
             else:
-                print("  WARNING: could not find send button or editor.")
+                print("  WARNING: could not find send button or editor — message NOT sent.")
 
-        print("Done — check the browser for Claude's response.")
+        _clear_clipboard()
+        if sent:
+            print("Done — check the browser for Claude's response.")
+        return sent
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -647,12 +689,16 @@ def main() -> None:
         print(f"Fetching unread emails from '{args.folder}' …")
         msgs = _fetch_raw_messages(session, args.folder, args.days, unread_only=True)
         print(f"  → {len(msgs)} emails fetched")
+        msgs = _filter_by_sender(msgs)
         if not msgs:
-            print("No emails found.")
+            print("No matching emails found.")
             return
         content = _format_for_claude_chat(msgs, args.days)
-        _post_to_claude_chat(content, args.chat)
-        _mark_read_and_delete(session, msgs)
+        sent = _post_to_claude_chat(content, args.chat)
+        if sent:
+            _mark_read_and_delete(session, msgs)
+        else:
+            print("  Send not confirmed — emails kept (not deleted).")
         return
 
     # --claude / --output: fetch commits, format/summarize, print or save
