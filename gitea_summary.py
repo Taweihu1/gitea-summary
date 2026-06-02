@@ -198,20 +198,23 @@ def _list_folders(session) -> None:
         url = body.get("@odata.nextLink")
 
 
-def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = False) -> list[dict]:
+def _fetch_raw_messages(session, folder: str, days: int, unread_only: bool = False,
+                        ignore_days: bool = False) -> list[dict]:
     folder_id = _find_folder_id(session, folder)
     folder_id_enc = urllib.parse.quote(folder_id, safe="")
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
-        "%Y-%m-%dT00:00:00Z"
-    )
-    clauses = [f"receivedDateTime ge {since}"]
+    clauses = []
+    if not ignore_days:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%dT00:00:00Z"
+        )
+        clauses.append(f"receivedDateTime ge {since}")
     if unread_only:
         clauses.append("isRead eq false")
-    filt = " and ".join(clauses)
+    filt_param = f"&$filter={' and '.join(clauses)}" if clauses else ""
     url = (
         f"{OUTLOOK_API}/me/mailFolders/{folder_id_enc}/messages"
-        f"?$filter={filt}"
-        f"&$select=Id,Subject,ReceivedDateTime,Body,From&$top=50"
+        f"?$select=Id,Subject,ReceivedDateTime,Body,From&$top=50"
+        f"{filt_param}"
     )
     msgs: list[dict] = []
     while url:
@@ -580,28 +583,36 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
         print("  Pasted.")
         page.wait_for_timeout(1500)
 
-        # Submit
-        sent = False
+        # Submit — prefer the send button, fall back to Enter
         send_btn = (
             page.query_selector('button[aria-label="Send message"]')
             or page.query_selector('button[data-testid="send-button"]')
         )
-        if send_btn:
+        if send_btn and send_btn.is_enabled():
             send_btn.click()
-            print("  Message sent.")
-            sent = True
         else:
-            editor = page.query_selector('[contenteditable="true"]')
-            if editor:
-                editor.press("Enter")
-                print("  Message sent via Enter.")
-                sent = True
-            else:
-                print("  WARNING: could not find send button or editor — message NOT sent.")
+            if send_btn:
+                print("  Send button is disabled — falling back to Enter.")
+            editor.press("Enter")
+
+        # Confirm the message actually left the editor. A successful submit
+        # clears the ProseMirror box; if text remains, the send did NOT go
+        # through (disabled button, paste failure, rate limit, etc.) and we
+        # must report failure so callers keep the source emails.
+        page.wait_for_timeout(1500)
+        remaining = (
+            page.query_selector('.ProseMirror[contenteditable="true"]')
+            or page.query_selector('[contenteditable="true"]')
+        )
+        leftover = remaining.inner_text().strip() if remaining else ""
+        sent = (leftover == "")
 
         _clear_clipboard()
         if sent:
+            print("  Message sent (editor cleared).")
             print("Done — check the browser for Claude's response.")
+        else:
+            print("  WARNING: editor still contains text — send unconfirmed, NOT sent.")
         return sent
 
 
@@ -632,6 +643,8 @@ def main() -> None:
         help="Generate narrative summary via Claude API (requires ANTHROPIC_API_KEY)")
     parser.add_argument("--verbose", action="store_true",
         help="Show which emails are skipped and why")
+    parser.add_argument("--all-unread", action="store_true",
+        help="In default/--post mode, process ALL unread GIT-INFORMER emails regardless of age (ignores --days)")
     args = parser.parse_args()
 
     if args.login:
@@ -686,8 +699,10 @@ def main() -> None:
 
     if args.post or not (args.claude or args.output or args.list_folders):
         # Default behaviour: fetch unread emails and post to Claude.ai chat
-        print(f"Fetching unread emails from '{args.folder}' …")
-        msgs = _fetch_raw_messages(session, args.folder, args.days, unread_only=True)
+        scope = "all ages" if args.all_unread else f"last {args.days} day(s)"
+        print(f"Fetching unread emails from '{args.folder}' ({scope}) …")
+        msgs = _fetch_raw_messages(session, args.folder, args.days,
+                                   unread_only=True, ignore_days=args.all_unread)
         print(f"  → {len(msgs)} emails fetched")
         msgs = _filter_by_sender(msgs)
         if not msgs:

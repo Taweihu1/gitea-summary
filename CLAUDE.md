@@ -15,6 +15,9 @@ python gitea_summary.py --login-claude
 # then mark them read and delete them (only on confirmed send)
 python gitea_summary.py
 
+# Same, but process ALL unread GIT-INFORMER emails regardless of age
+python gitea_summary.py --all-unread
+
 # Generate AI narrative summary (Traditional Chinese) via Claude API
 python gitea_summary.py --claude --output summary.md
 
@@ -73,7 +76,7 @@ Normal run (summarize mode):
 
 **Upstream-sync filter** — `_is_upstream_sync()` drops merge/rebase-from-upstream commits. Patterns live at the top of that function.
 
-**Sender filter + cleanup** — `_filter_by_sender()` keeps only emails whose `From.EmailAddress.Name` contains `SENDER_KEYWORD` (`"GIT-INFORMER"`), applied right after fetch so the summarised set always equals the deleted set. After a run, `_mark_read_and_delete()` marks each message read then DELETEs it (moves to Deleted Items). **Critical invariant:** in `--post` mode, deletion only happens when `_post_to_claude_chat()` returns `True` (confirmed send) — never delete emails that weren't successfully posted.
+**Sender filter + cleanup** — `_filter_by_sender()` keeps only emails whose `From.EmailAddress.Name` contains `SENDER_KEYWORD` (`"GIT-INFORMER"`), applied right after fetch so the summarised set always equals the deleted set. After a run, `_mark_read_and_delete()` marks each message read then DELETEs it (moves to Deleted Items). **Critical invariant:** in `--post` mode, deletion only happens when `_post_to_claude_chat()` returns `True` — never delete emails that weren't successfully posted. "Confirmed send" is verified by **clicking only an enabled send button and then checking the ProseMirror editor is empty afterwards** (a successful submit clears it); leftover text → `False`, so a disabled button, failed paste, or rate-limit leaves the emails intact. Use `--all-unread` to clean up unread emails older than `--days`.
 
 **Outlook REST API** — `https://outlook.office365.com/api/v2.0`, PascalCase fields (`Subject`, `Body.Content`, `ReceivedDateTime`). Folder IDs containing `/` are URL-encoded before use.
 
