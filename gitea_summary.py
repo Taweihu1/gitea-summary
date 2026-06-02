@@ -75,7 +75,6 @@ _BROWSER_CANDIDATES = [
 OUTLOOK_AUTH_FILE  = Path(__file__).parent / "auth_state.json"
 OUTLOOK_HOME       = "https://outlook.cloud.microsoft"
 CDP_PORT           = 9222
-BRAVE_PROFILE_DIR  = Path(__file__).parent / "brave_profile"
 OUTLOOK_API       = "https://outlook.office365.com/api/v2.0"
 CLAUDE_CHAT_URL   = os.getenv(
     "CLAUDE_CHAT_URL",
