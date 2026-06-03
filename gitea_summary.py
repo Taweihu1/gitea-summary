@@ -13,9 +13,6 @@ Quick start
   # Step 1 (once): save Outlook session
   python gitea_summary.py --login
 
-  # Step 2 (once, only needed for --post): save Claude.ai session
-  python gitea_summary.py --login-claude
-
   # Summarise last day (default)
   python gitea_summary.py
 
@@ -113,7 +110,6 @@ def cmd_login() -> None:
         ctx.storage_state(path=str(OUTLOOK_AUTH_FILE))
         print(f"Outlook session saved -> {OUTLOOK_AUTH_FILE}")
         browser.close()
-
 
 
 # ── Capture Outlook Bearer token (headless) ──────────────────────────────────
@@ -352,10 +348,12 @@ def _parse_gitea_message(subject: str, body: str, date: str) -> list[dict] | Non
 
 # ── Fetch & filter commits ───────────────────────────────────────────────────
 
-def _fetch_commits(session, folder: str, days: int, verbose: bool = False) -> tuple[list[dict], list[dict]]:
-    raw_messages = _fetch_raw_messages(session, folder, days)
+def _fetch_commits(session, folder: str, days: int, verbose: bool = False,
+                   ignore_days: bool = False) -> tuple[list[dict], list[dict]]:
+    raw_messages = _fetch_raw_messages(session, folder, days, ignore_days=ignore_days)
     raw_messages = _filter_by_sender(raw_messages)
-    print(f"Scanning {len(raw_messages)} email(s) from the last {days} day(s) …")
+    scope = "all ages" if ignore_days else f"last {days} day(s)"
+    print(f"Scanning {len(raw_messages)} email(s) from {scope} …")
 
     commits: list[dict] = []
     skipped_sync = 0
@@ -503,7 +501,6 @@ def _set_clipboard_win32(text: str) -> bool:
     """Write text to the Windows clipboard via ctypes Win32 API.
     Returns True on success, False on failure (e.g. clipboard locked)."""
     import ctypes
-    import ctypes.wintypes as wt
     CF_UNICODETEXT = 13
     GMEM_MOVEABLE  = 0x0002
     try:
@@ -534,13 +531,13 @@ def _set_clipboard(text: str, retries: int = 5, delay: float = 0.5) -> None:
     """Set clipboard text with retry logic.
     Primary: Win32 API (ctypes) — no subprocess, no lock contention.
     Fallback: PowerShell Set-Clipboard (handles edge cases on some systems)."""
-    import subprocess
     last_exc: Exception | None = None
     for attempt in range(1, retries + 1):
         # Primary: Win32 API
         if _set_clipboard_win32(text):
             return
-        # Fallback: PowerShell
+        # Win32 returned False (clipboard locked or unavailable); try PowerShell
+        print(f"  [clipboard] Win32 API failed on attempt {attempt}/{retries}, trying PowerShell …")
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".txt", encoding="utf-8", delete=False
@@ -548,7 +545,7 @@ def _set_clipboard(text: str, retries: int = 5, delay: float = 0.5) -> None:
                 tf.write(text)
                 tmp_path = Path(tf.name)
             try:
-                result = subprocess.run(
+                subprocess.run(
                     ["powershell", "-command",
                      f"Get-Content -Path '{tmp_path}' -Raw | Set-Clipboard"],
                     check=True, timeout=10,
@@ -558,7 +555,7 @@ def _set_clipboard(text: str, retries: int = 5, delay: float = 0.5) -> None:
                 tmp_path.unlink(missing_ok=True)
         except Exception as exc:
             last_exc = exc
-            print(f"  [clipboard] attempt {attempt}/{retries} failed: {exc}")
+            print(f"  [clipboard] PowerShell fallback also failed: {exc}")
             if attempt < retries:
                 time.sleep(delay)
     raise RuntimeError(
@@ -572,7 +569,6 @@ def _clear_clipboard() -> None:
         _set_clipboard_win32(" ")
     except Exception:
         pass
-
 
 
 def _format_for_claude_chat(msgs: list[dict], days: int) -> str:
@@ -652,13 +648,18 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
         # clears the ProseMirror box; if text remains, the send did NOT go
         # through (disabled button, paste failure, rate limit, etc.) and we
         # must report failure so callers keep the source emails.
-        page.wait_for_timeout(1500)
-        remaining = (
-            page.query_selector('.ProseMirror[contenteditable="true"]')
-            or page.query_selector('[contenteditable="true"]')
-        )
-        leftover = remaining.inner_text().strip() if remaining else ""
-        sent = (leftover == "")
+        # Poll up to 5 seconds in 500ms steps to handle slow network/rendering.
+        sent = False
+        for _ in range(10):
+            page.wait_for_timeout(500)
+            remaining = (
+                page.query_selector('.ProseMirror[contenteditable="true"]')
+                or page.query_selector('[contenteditable="true"]')
+            )
+            leftover = remaining.inner_text().strip() if remaining else ""
+            if leftover == "":
+                sent = True
+                break
 
         _clear_clipboard()
         if sent:
@@ -770,7 +771,9 @@ def main() -> None:
         return
 
     # --claude / --output: fetch commits, format/summarize, print or save
-    commits, raw_messages = _fetch_commits(session, args.folder, args.days, verbose=args.verbose)
+    commits, raw_messages = _fetch_commits(session, args.folder, args.days,
+                                           verbose=args.verbose,
+                                           ignore_days=args.all_unread)
 
     if args.claude:
         summary = _claude_api_summary(commits, args.days)

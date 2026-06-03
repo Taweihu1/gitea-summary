@@ -8,9 +8,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Step 1 (once): save Outlook session
 python gitea_summary.py --login
 
-# Step 2 (once, only needed for --post): save Claude.ai session
-python gitea_summary.py --login-claude
-
 # Default: post last 7 days of unread GIT-INFORMER emails to Claude.ai chat,
 # then mark them read and delete them (only on confirmed send)
 python gitea_summary.py
@@ -21,7 +18,7 @@ python gitea_summary.py --all-unread
 # Generate AI narrative summary (Traditional Chinese) via Claude API
 python gitea_summary.py --claude --output summary.md
 
-# Post raw emails to Claude.ai chat (requires --login-claude; Brave/Chrome must be running)
+# Post raw emails to Claude.ai chat (Brave must be running with CDP port 9222)
 python gitea_summary.py --post
 
 # List available Outlook folders
@@ -45,20 +42,18 @@ Set in `.env` or as environment variables:
 
 Session files:
 - `auth_state.json` — Outlook session (created by `--login`); re-run `--login` if expired
-- `claude_auth_state.json` — Claude.ai session (created by `--login-claude`); needed for `--post`
 
-Claude.ai posting uses **CDP** (Chrome DevTools Protocol) to connect to the real Brave/Chrome
-browser instead of a fresh context, bypassing Cloudflare bot detection.
-The script auto-launches Brave with `--remote-debugging-port=9222` if the browser is not running.
+Claude.ai posting uses **CDP** (Chrome DevTools Protocol) to connect to a running Brave/Chrome
+browser, bypassing Cloudflare bot detection. `run_summary.bat` auto-launches Brave with
+`--remote-debugging-port=9222 --profile-directory="Claude"` if the port is not already open.
 
 ## Architecture
 
 Single-file CLI (`gitea_summary.py`). Two auth phases, two operating modes:
 
 ```
-Login phases (once each):
+Login phase (once):
   --login        → headless=False, outlook.cloud.microsoft → auth_state.json
-  --login-claude → headless=False, claude.ai              → claude_auth_state.json
 
 Normal run (summarize mode):
   headless=True + auth_state.json → capture OWA Bearer token
@@ -67,9 +62,10 @@ Normal run (summarize mode):
   _format_summary() or _claude_api_summary() → print / save
 
 --post mode (raw email → Claude chat):
-  Same Outlook fetch (raw messages, no commit parsing)
-  headless=False + claude_auth_state.json → open Claude chat
-  clipboard + execCommand('paste') → fill ProseMirror editor → submit
+  Same Outlook fetch (raw messages, no commit parsing) → _filter_by_sender
+  CDP → connect to running Brave → navigate to CLAUDE_CHAT_URL
+  clipboard (Win32 API + PowerShell fallback) → paste → send button / Enter
+  Confirm send by polling until ProseMirror editor clears (up to 5s)
 ```
 
 **Key parsing logic** — `_parse_gitea_message()` extracts repo, branch, author, hash, and title from Gitea push notification email subjects. Format expected: `[owner/repo] commit_title (branch)`. Multi-commit pushes are handled via `* <hash> <title>` lines in the body (HTML stripped before parsing).
