@@ -6,24 +6,14 @@ Skips relaunch if port 9222 is already open.
 """
 import http.client, os, subprocess, time, sys
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CHROME   = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CDP_PORT = 9222
 # Dedicated no-space directory avoids Chrome CDP bind failures that occur
 # with the default "User Data" path (spaces + existing profile state).
 UD_DIR = os.path.join(os.environ["USERPROFILE"], "ChromeClaudeDP")
 LOCK_FILES = ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]
 
-# If CDP port 9222 is already open, reuse without touching Chrome
-try:
-    conn = http.client.HTTPConnection("localhost", 9222, timeout=3)
-    conn.request("GET", "/json/version")
-    conn.getresponse().read()
-    conn.close()
-    print("  Port 9222 already open — reusing existing browser.")
-    sys.exit(0)
-except Exception:
-    pass
-
-# Kill all Chrome processes and wait until fully gone
+# Always kill all Chrome processes and wait until fully gone
 print("  Closing all Chrome windows...")
 subprocess.run(["taskkill", "/IM", "chrome.exe", "/F"], capture_output=True)
 for _ in range(30):
@@ -44,9 +34,9 @@ for f in LOCK_FILES:
 print("  Lock files cleared.")
 
 # Launch Chrome — subprocess list form handles spaces in path correctly
-print("  Launching Chrome (ChromeClaudeDP, port 9222)...")
+print(f"  Launching Chrome (ChromeClaudeDP, port {CDP_PORT})...")
 subprocess.Popen([
     CHROME,
-    "--remote-debugging-port=9222",
+    f"--remote-debugging-port={CDP_PORT}",
     f"--user-data-dir={UD_DIR}",
 ])
