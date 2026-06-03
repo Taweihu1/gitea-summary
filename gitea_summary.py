@@ -473,7 +473,7 @@ def _claude_api_summary(commits: list[dict], days: int) -> str:
 # ── CDP browser connection (bypasses Cloudflare) ────────────────────────────
 
 def _connect_cdp(pw):
-    """Connect to Brave via CDP. Brave must be running with --remote-debugging-port=CDP_PORT.
+    """Connect to Chrome via CDP. Chrome must be running with --remote-debugging-port=CDP_PORT.
     Uses http.client directly to bypass corporate proxy."""
     import http.client, json as _json
 
@@ -571,7 +571,7 @@ def _clear_clipboard() -> None:
         pass
 
 
-def _format_for_claude_chat(msgs: list[dict], days: int) -> str:
+def _format_for_claude_chat(msgs: list[dict]) -> str:
     lines = [
         f"以下是 Outlook GIT 資料夾的未讀信件（共 {len(msgs)} 封）。",
         "請依照對話規則總結這些 Gitea commit 通知。\n",
@@ -630,7 +630,6 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
         page.keyboard.press("Control+a")
         page.keyboard.press("Control+v")
         print("  Pasted.")
-        page.wait_for_timeout(1500)
 
         # Submit — prefer the send button, fall back to Enter
         send_btn = (
@@ -680,11 +679,11 @@ def main() -> None:
     parser.add_argument("--login", action="store_true",
         help="Open browser to log in to Outlook and save session")
     parser.add_argument("--test-browser", action="store_true",
-        help="Test Brave CDP connection and open the target chat URL, then exit")
+        help="Test Chrome CDP connection and open the target chat URL, then exit")
     parser.add_argument("--list-folders", action="store_true",
         help="Print all Outlook folders and exit")
     parser.add_argument("--post", action="store_true",
-        help="Post raw emails to Claude.ai chat for summarization (Brave must run with --remote-debugging-port=9222)")
+        help="Post raw emails to Claude.ai chat for summarization (Chrome must run with --remote-debugging-port=9222)")
     parser.add_argument("--chat", default=CLAUDE_CHAT_URL,
         help="Claude.ai chat URL for --post (or set CLAUDE_CHAT_URL)")
     parser.add_argument("--folder", default="GIT",
@@ -707,7 +706,7 @@ def main() -> None:
 
     if args.test_browser:
         from playwright.sync_api import sync_playwright
-        print(f"Testing Brave CDP connection on port {CDP_PORT} …")
+        print(f"Testing Chrome CDP connection on port {CDP_PORT} …")
         with sync_playwright() as pw:
             browser = _connect_cdp(pw)
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
@@ -724,7 +723,7 @@ def main() -> None:
             title = page.title()
             if "login" in current or "sign" in current.lower():
                 print(f"  ✗ Not logged in — redirected to: {current}")
-                print("    Please log in to Claude.ai in the Brave window, then re-run.")
+                print("    Please log in to Claude.ai in the Chrome window, then re-run.")
                 input("Press Enter to close … ")
                 return
             print(f"  ✓ Logged in  (title: {title})")
@@ -762,7 +761,7 @@ def main() -> None:
         if not msgs:
             print("No matching emails found.")
             return
-        content = _format_for_claude_chat(msgs, args.days)
+        content = _format_for_claude_chat(msgs)
         sent = _post_to_claude_chat(content, args.chat)
         if sent:
             _mark_read_and_delete(session, msgs)
@@ -788,7 +787,10 @@ def main() -> None:
         print()
         print(summary)
 
-    _mark_read_and_delete(session, raw_messages)
+    if commits:
+        _mark_read_and_delete(session, raw_messages)
+    else:
+        print("No commits found — emails kept (not deleted).")
 
 
 if __name__ == "__main__":
