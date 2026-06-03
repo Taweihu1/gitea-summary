@@ -34,7 +34,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from collections import defaultdict
@@ -497,12 +499,77 @@ def _connect_cdp(pw):
 
 # ── Post raw emails to Claude.ai chat ────────────────────────────────────────
 
-def _clear_clipboard() -> None:
-    """Wipe the email contents from the Windows clipboard after pasting."""
-    import subprocess
+def _set_clipboard_win32(text: str) -> bool:
+    """Write text to the Windows clipboard via ctypes Win32 API.
+    Returns True on success, False on failure (e.g. clipboard locked)."""
+    import ctypes
+    import ctypes.wintypes as wt
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE  = 0x0002
     try:
-        subprocess.run(["powershell", "-command", "Set-Clipboard -Value ' '"],
-                       check=False, timeout=10)
+        kernel32 = ctypes.windll.kernel32
+        user32   = ctypes.windll.user32
+        encoded  = (text + "\x00").encode("utf-16-le")
+        h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+        if not h_mem:
+            return False
+        ptr = kernel32.GlobalLock(h_mem)
+        if not ptr:
+            kernel32.GlobalFree(h_mem)
+            return False
+        ctypes.memmove(ptr, encoded, len(encoded))
+        kernel32.GlobalUnlock(h_mem)
+        if not user32.OpenClipboard(None):
+            kernel32.GlobalFree(h_mem)
+            return False
+        user32.EmptyClipboard()
+        user32.SetClipboardData(CF_UNICODETEXT, h_mem)
+        user32.CloseClipboard()
+        return True
+    except Exception:
+        return False
+
+
+def _set_clipboard(text: str, retries: int = 5, delay: float = 0.5) -> None:
+    """Set clipboard text with retry logic.
+    Primary: Win32 API (ctypes) — no subprocess, no lock contention.
+    Fallback: PowerShell Set-Clipboard (handles edge cases on some systems)."""
+    import subprocess
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        # Primary: Win32 API
+        if _set_clipboard_win32(text):
+            return
+        # Fallback: PowerShell
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", encoding="utf-8", delete=False
+            ) as tf:
+                tf.write(text)
+                tmp_path = Path(tf.name)
+            try:
+                result = subprocess.run(
+                    ["powershell", "-command",
+                     f"Get-Content -Path '{tmp_path}' -Raw | Set-Clipboard"],
+                    check=True, timeout=10,
+                )
+                return   # success
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        except Exception as exc:
+            last_exc = exc
+            print(f"  [clipboard] attempt {attempt}/{retries} failed: {exc}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise RuntimeError(
+        f"Could not set clipboard after {retries} attempts: {last_exc}"
+    )
+
+
+def _clear_clipboard() -> None:
+    """Wipe clipboard contents after pasting to avoid leaving email text behind."""
+    try:
+        _set_clipboard_win32(" ")
     except Exception:
         pass
 
@@ -550,22 +617,9 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
         page.goto(chat_url, wait_until="domcontentloaded", timeout=60_000)
         page.wait_for_timeout(3000)
 
-        # Write content to Windows clipboard via temp file + PowerShell
-        import subprocess, tempfile
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", encoding="utf-8", delete=False
-        ) as tf:
-            tf.write(content)
-            tmp = Path(tf.name)
-        try:
-            subprocess.run(
-                ["powershell", "-command",
-                 f"Get-Content -Path '{tmp}' -Raw | Set-Clipboard"],
-                check=True
-            )
-            print("  Clipboard ready.")
-        finally:
-            tmp.unlink(missing_ok=True)
+        # Write content to clipboard (Win32 API with PowerShell fallback + retry)
+        _set_clipboard(content)
+        print("  Clipboard ready.")
 
         # Focus editor and paste
         editor = (
