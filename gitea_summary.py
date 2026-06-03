@@ -61,14 +61,14 @@ _load_dotenv()
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _BROWSER_CANDIDATES = [
-    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-    r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/brave-browser",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/usr/bin/google-chrome",
+    "/usr/bin/brave-browser",
 ]
 
 OUTLOOK_AUTH_FILE  = Path(__file__).parent / "auth_state.json"
@@ -485,9 +485,9 @@ def _connect_cdp(pw):
         conn.close()
     except Exception as e:
         sys.exit(
-            f"Cannot reach Brave CDP on port {CDP_PORT}: {e}\n"
-            f"Launch Brave with:\n"
-            f'  & "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"'
+            f"Cannot reach Chrome CDP on port {CDP_PORT}: {e}\n"
+            f"Run launch_chrome_cdp.py or launch Chrome manually with:\n"
+            f'  & "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"'
             f" --remote-debugging-port={CDP_PORT}"
         )
 
