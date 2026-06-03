@@ -40,6 +40,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Ensure UTF-8 output on Windows (console may default to cp950/Big5)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def _load_dotenv() -> None:
     env_file = Path(__file__).parent / ".env"

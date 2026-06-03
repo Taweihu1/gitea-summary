@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+chcp 65001 >nul
+
 set HTTP_PROXY=http://cache2:3128
 set HTTPS_PROXY=http://cache2:3128
 set http_proxy=http://cache2:3128
