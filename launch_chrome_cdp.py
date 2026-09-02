@@ -39,4 +39,5 @@ subprocess.Popen([
     CHROME,
     f"--remote-debugging-port={CDP_PORT}",
     f"--user-data-dir={UD_DIR}",
+    "--start-minimized",
 ])

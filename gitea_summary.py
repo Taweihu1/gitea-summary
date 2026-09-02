@@ -250,13 +250,11 @@ def _filter_by_sender(messages: list[dict]) -> list[dict]:
 # ── Mark read + delete ──────────────────────────────────────────────────────
 
 def _mark_read_and_delete(session, messages: list[dict]) -> None:
-    """Mark each message read, then delete it (moves to Deleted Items).
-    Callers MUST pre-filter with _filter_by_sender — this no longer checks
-    the sender, so whatever is passed in gets deleted. The mark-read PATCH is
-    kept intentionally: if DELETE fails, the message is at least flagged read."""
+    """Mark each message read (no deletion).
+    Callers MUST pre-filter with _filter_by_sender."""
     if not messages:
         return
-    deleted = 0
+    marked = 0
     for msg in messages:
         msg_id = msg.get("Id") or msg.get("id")
         if not msg_id:
@@ -265,12 +263,11 @@ def _mark_read_and_delete(session, messages: list[dict]) -> None:
         url = f"{OUTLOOK_API}/me/messages/{msg_id_enc}"
         try:
             session.patch(url, json={"IsRead": True}, timeout=10).raise_for_status()
-            session.delete(url, timeout=10).raise_for_status()
-            deleted += 1
+            marked += 1
         except Exception as exc:
-            print(f"  [warn] failed to process message {msg_id[:20]}…: {exc}")
+            print(f"  [warn] failed to mark message {msg_id[:20]}…: {exc}")
         time.sleep(0.05)
-    print(f"  → {deleted} email(s) marked read and deleted")
+    print(f"  → {marked} email(s) marked as read")
 
 
 # ── Upstream-sync detection ──────────────────────────────────────────────────
