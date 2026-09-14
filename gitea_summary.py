@@ -604,7 +604,7 @@ def _write_emails_to_file(msgs: list[dict]) -> Path:
     date_str  = datetime.now().strftime("%Y%m%d")
     file_path = script_dir / f"{date_str}.txt"
     content   = _format_for_claude_chat(msgs)
-    file_path.write_text(content, encoding="utf-8")
+    file_path.write_text(content, encoding="utf-8-sig")  # BOM helps Claude.ai detect encoding
     print(f"  Emails written to: {file_path}")
     return file_path
 
@@ -655,8 +655,9 @@ def _post_to_claude_chat(file_path: Path, chat_url: str) -> bool:
             page.wait_for_timeout(1500)
 
         print(f"  File attached: {file_path.name}")
+        page.wait_for_timeout(3000)   # wait for upload to complete
 
-        # Focus editor and type the prompt
+        # Focus editor and type the summarization prompt
         editor = (
             page.query_selector('.ProseMirror[contenteditable="true"]')
             or page.query_selector('[contenteditable="true"]')
@@ -665,7 +666,10 @@ def _post_to_claude_chat(file_path: Path, chat_url: str) -> bool:
             print("  WARNING: editor not found — message NOT sent.")
             return False
         editor.click()
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(300)
+        prompt = "請依照 repository 分組，用繁體中文總結這份檔案中的 Gitea commit 通知，並在最後提供整體開發進度的簡短摘要。"
+        page.keyboard.type(prompt)
+        page.wait_for_timeout(300)
 
         # Submit — prefer the send button, fall back to Enter
         send_btn = (
