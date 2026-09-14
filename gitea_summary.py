@@ -577,7 +577,7 @@ def _clear_clipboard() -> None:
 def _format_for_claude_chat(msgs: list[dict]) -> str:
     lines = [
         f"以下是 Outlook GIT 資料夾的未讀信件（共 {len(msgs)} 封）。",
-        "請依照對話規則總結這些 Gitea commit 通知。\n",
+        "請依照 repository 分組，用繁體中文總結這些 Gitea commit 通知的主要變更，並在最後提供整體開發進度的簡短摘要。\n",
     ]
     for i, msg in enumerate(msgs, 1):
         subject = msg.get("Subject", "(無主旨)")
@@ -592,9 +592,19 @@ def _format_for_claude_chat(msgs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _post_to_claude_chat(content: str, chat_url: str) -> bool:
-    """Returns True only if the message was confirmed sent. Callers should NOT
-    delete source emails unless this returns True."""
+def _write_emails_to_file(msgs: list[dict]) -> Path:
+    """Write formatted emails to YYYYMMDD.txt in the script directory."""
+    date_str  = datetime.now().strftime("%Y%m%d")
+    file_path = Path(__file__).parent / f"{date_str}.txt"
+    content   = _format_for_claude_chat(msgs)
+    file_path.write_text(content, encoding="utf-8")
+    print(f"  Emails written to: {file_path}")
+    return file_path
+
+
+def _post_to_claude_chat(file_path: Path, chat_url: str) -> bool:
+    """Upload file_path to Claude.ai chat and ask for a summary.
+    Returns True only if the message was confirmed sent."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -611,28 +621,44 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
         if page is None:
             page = ctx.new_page()
 
-        print(f"  Navigating to chat …")
+        print("  Navigating to chat …")
         page.bring_to_front()
         page.goto(chat_url, wait_until="domcontentloaded", timeout=60_000)
         page.wait_for_timeout(3000)
 
-        # Write content to clipboard (Win32 API with PowerShell fallback + retry)
-        _set_clipboard(content)
-        print("  Clipboard ready.")
+        # Upload the file via the hidden file input
+        file_input = page.query_selector('input[type="file"]')
+        if file_input is None:
+            # Try clicking the attachment button to reveal the file input
+            attach_btn = (
+                page.query_selector('button[aria-label*="ttach"]')
+                or page.query_selector('button[aria-label*="ile"]')
+                or page.query_selector('button[data-testid*="attach"]')
+            )
+            if attach_btn:
+                with page.expect_file_chooser(timeout=5000) as fc_info:
+                    attach_btn.click()
+                fc_info.value.set_files(str(file_path))
+                page.wait_for_timeout(1500)
+            else:
+                print("  WARNING: file input not found — message NOT sent.")
+                return False
+        else:
+            file_input.set_input_files(str(file_path))
+            page.wait_for_timeout(1500)
 
-        # Focus editor and paste
+        print(f"  File attached: {file_path.name}")
+
+        # Focus editor and type the prompt
         editor = (
             page.query_selector('.ProseMirror[contenteditable="true"]')
             or page.query_selector('[contenteditable="true"]')
         )
         if not editor:
             print("  WARNING: editor not found — message NOT sent.")
-            _clear_clipboard()
             return False
         editor.click()
-        page.keyboard.press("Control+a")
-        page.keyboard.press("Control+v")
-        print("  Pasted.")
+        page.wait_for_timeout(500)
 
         # Submit — prefer the send button, fall back to Enter
         send_btn = (
@@ -646,11 +672,8 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
                 print("  Send button is disabled — falling back to Enter.")
             editor.press("Enter")
 
-        # Confirm the message actually left the editor. A successful submit
-        # clears the ProseMirror box; if text remains, the send did NOT go
-        # through (disabled button, paste failure, rate limit, etc.) and we
-        # must report failure so callers keep the source emails.
-        # Poll up to 5 seconds in 500ms steps to handle slow network/rendering.
+        # Confirm the message actually left the editor (editor clears on success).
+        # Poll up to 5 seconds in 500ms steps.
         sent = False
         for _ in range(10):
             page.wait_for_timeout(500)
@@ -663,7 +686,6 @@ def _post_to_claude_chat(content: str, chat_url: str) -> bool:
                 sent = True
                 break
 
-        _clear_clipboard()
         if sent:
             print("  Message sent (editor cleared).")
             print("Done — check the browser for Claude's response.")
@@ -764,8 +786,8 @@ def main() -> None:
         if not msgs:
             print("No matching emails found.")
             return
-        content = _format_for_claude_chat(msgs)
-        sent = _post_to_claude_chat(content, args.chat)
+        file_path = _write_emails_to_file(msgs)
+        sent = _post_to_claude_chat(file_path, args.chat)
         if sent:
             _mark_read_and_delete(session, msgs)
         else:
