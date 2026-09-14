@@ -593,9 +593,16 @@ def _format_for_claude_chat(msgs: list[dict]) -> str:
 
 
 def _write_emails_to_file(msgs: list[dict]) -> Path:
-    """Write formatted emails to YYYYMMDD.txt in the script directory."""
+    """Write formatted emails to YYYYMMDD.txt in the script directory.
+    Deletes any previously generated date-named .txt files first."""
+    script_dir = Path(__file__).parent
+    _DATE_TXT = re.compile(r"^\d{8}\.txt$")
+    for old in script_dir.glob("*.txt"):
+        if _DATE_TXT.match(old.name):
+            old.unlink()
+            print(f"  Removed old file: {old.name}")
     date_str  = datetime.now().strftime("%Y%m%d")
-    file_path = Path(__file__).parent / f"{date_str}.txt"
+    file_path = script_dir / f"{date_str}.txt"
     content   = _format_for_claude_chat(msgs)
     file_path.write_text(content, encoding="utf-8")
     print(f"  Emails written to: {file_path}")
