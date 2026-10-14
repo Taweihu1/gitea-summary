@@ -667,7 +667,11 @@ def _post_to_claude_chat(file_path: Path, chat_url: str) -> bool:
             return False
         editor.click()
         page.wait_for_timeout(300)
-        prompt = "請依照 repository 分組，用繁體中文總結這份檔案中的 Gitea commit 通知，並在最後提供整體開發進度的簡短摘要。"
+        prompt = (
+            "請依照 repository 分組，用繁體中文總結這份檔案中的 Gitea commit 通知，"
+            "並在最後提供整體開發進度的簡短摘要。"
+            "另外，請在文末單獨列出所有 commit 進 ast-v5_5_0-branch 的 commit 內容（hash、標題、作者）。"
+        )
         page.keyboard.type(prompt)
         page.wait_for_timeout(300)
 
